@@ -142,6 +142,16 @@ export interface AdminSlot {
   updated_at: string;
 }
 
+export interface TeacherContact {
+  id: number;
+  name: string;
+  designation: string;
+  subject: string;
+  class_assigned: string;
+  phone: string;
+  updated_at: string;
+}
+
 export type PortalTab =
   | 'overview'
   | 'academics'
@@ -149,5 +159,7 @@ export type PortalTab =
   | 'messages'
   | 'gallery'
   | 'quiz'
+  | 'teachers'
   | 'idcard'
   | 'owner';
+

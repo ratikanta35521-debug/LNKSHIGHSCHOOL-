@@ -1,7 +1,8 @@
 import Database from 'better-sqlite3';
+import crypto from 'crypto';
 import fs from 'fs';
 import path from 'path';
-import { hashPassword } from './security.ts';
+import { hashPassword, setPersistentSessionSecret } from './security.ts';
 
 export const DATA_DIR = path.resolve(process.cwd(), 'data');
 export const UPLOAD_DIR = path.join(DATA_DIR, 'uploads');
@@ -214,9 +215,40 @@ export function initializeDatabase(): void {
       created_at TEXT NOT NULL,
       FOREIGN KEY (student_id) REFERENCES students(id) ON DELETE CASCADE
     );
+
+    CREATE TABLE IF NOT EXISTS app_settings (
+      key TEXT PRIMARY KEY,
+      value TEXT NOT NULL,
+      updated_at TEXT NOT NULL
+    );
+
+    CREATE TABLE IF NOT EXISTS teachers (
+      id INTEGER PRIMARY KEY AUTOINCREMENT,
+      name TEXT NOT NULL,
+      designation TEXT NOT NULL,
+      subject TEXT NOT NULL,
+      class_assigned TEXT NOT NULL DEFAULT 'Class 9 & 10',
+      phone TEXT NOT NULL,
+      updated_at TEXT NOT NULL
+    );
   `);
 
   const now = new Date().toISOString();
+
+  // 0. Initialize persistent session secret so sessions survive server restarts
+  const secretRow = db.prepare("SELECT value FROM app_settings WHERE key = 'session_secret'").get() as
+    | { value: string }
+    | undefined;
+  if (secretRow?.value) {
+    setPersistentSessionSecret(secretRow.value);
+  } else {
+    const generated = crypto.randomBytes(32).toString('hex');
+    db.prepare("INSERT OR IGNORE INTO app_settings (key, value, updated_at) VALUES ('session_secret', ?, ?)").run(
+      generated,
+      now
+    );
+    setPersistentSessionSecret(generated);
+  }
 
   // 1. Seed Super Owner if missing
   const ownerRow = db.prepare('SELECT id FROM owner WHERE id = 1').get();
@@ -681,4 +713,27 @@ export function initializeDatabase(): void {
       insertQuiz.run(q[0], q[1], q[2], q[3], JSON.stringify(q[4]), q[5], q[6], 'Principal / Super Owner', now);
     }
   }
+
+  // 7. Seed L.N.K.S High School Teachers Directory if empty
+  const teacherCount = (db.prepare('SELECT COUNT(*) as c FROM teachers').get() as { c: number }).c;
+  if (teacherCount === 0) {
+    const insertTeacher = db.prepare(
+      `INSERT INTO teachers (name, designation, subject, class_assigned, phone, updated_at)
+       VALUES (?, ?, ?, ?, ?, ?)`
+    );
+    const seedTeachers: Array<[string, string, string, string, string]> = [
+      ['Headmaster, L.N.K.S High School', 'Headmaster', 'Administration & Supervision', 'Class 9 & 10', '9437000001'],
+      ['Ramesh Chandra Sahoo', 'Senior Assistant Teacher', 'Mathematics (ଗଣିତ)', 'Class 9 & 10', '9437000002'],
+      ['Pradeep Kumar Mohanty', 'Science Teacher', 'Physical Science (ଭୌତିକ ବିଜ୍ଞାନ)', 'Class 9 & 10', '9437000003'],
+      ['Smita Rani Panda', 'Science Teacher', 'Life Science (ଜୀବ ବିଜ୍ଞାନ)', 'Class 9 & 10', '9437000004'],
+      ['Bikash Ranjan Dash', 'Assistant Teacher', 'English (ଇଂରାଜୀ)', 'Class 9 & 10', '9437000005'],
+      ['Subhashree Swain', 'Assistant Teacher', 'MIL Odia (ସାହିତ୍ୟ)', 'Class 9 & 10', '9437000006'],
+      ['Narayan Prasad Mishra', 'Classical Teacher', 'Sanskrit (ସଂସ୍କୃତ)', 'Class 9 & 10', '9437000007'],
+      ['Manoj Kumar Behera', 'Assistant Teacher', 'History, Polity & Geography', 'Class 9 & 10', '9437000008'],
+    ];
+    for (const t of seedTeachers) {
+      insertTeacher.run(t[0], t[1], t[2], t[3], t[4], now);
+    }
+  }
 }
+

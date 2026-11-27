@@ -7,9 +7,10 @@ import { AuthUser, Language } from '../types';
 interface StudentIdCardTabProps {
   user: AuthUser;
   lang: Language;
+  logoUrl: string;
 }
 
-export const StudentIdCardTab: React.FC<StudentIdCardTabProps> = ({ user, lang }) => {
+export const StudentIdCardTab: React.FC<StudentIdCardTabProps> = ({ user, lang, logoUrl }) => {
   const t = createTranslator(lang);
   const student = user.student;
 
@@ -48,7 +49,7 @@ export const StudentIdCardTab: React.FC<StudentIdCardTabProps> = ({ user, lang }
         <section className="lg:col-span-6 print-card rounded-3xl overflow-hidden bg-white border border-slate-200 shadow-sm">
           <div className="bg-blue-950 text-white p-5 sm:p-6 flex items-center gap-4">
             <img
-              src={ASSETS.crest}
+              src={logoUrl || ASSETS.crest}
               alt="L.N.K.S High School Crest"
               referrerPolicy="no-referrer"
               className="w-14 h-14 rounded-2xl object-cover border border-amber-400/50 shrink-0"

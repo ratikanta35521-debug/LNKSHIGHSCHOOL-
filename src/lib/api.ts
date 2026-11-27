@@ -1,4 +1,8 @@
-// In-memory Bearer token store (never written to localStorage/sessionStorage for XSS resilience)
+import { AuthUser } from '../types';
+
+const PROFILE_STORAGE_KEY = 'lnks_portal_user_profile_v1';
+
+// In-memory Bearer token (paired with server HttpOnly Partitioned session cookie for refresh persistence)
 let authToken: string | null = null;
 let onUnauthorizedCallback: (() => void) | null = null;
 
@@ -14,15 +18,52 @@ export function setUnauthorizedHandler(cb: () => void): void {
   onUnauthorizedCallback = cb;
 }
 
+/**
+ * Persists non-sensitive user profile metadata in localStorage so page refresh
+ * renders immediately while the server HttpOnly session cookie is re-verified against SQLite.
+ */
+export function saveCachedUserProfile(user: AuthUser): void {
+  try {
+    localStorage.setItem(PROFILE_STORAGE_KEY, JSON.stringify(user));
+  } catch {
+    // Ignore storage quota / privacy mode errors
+  }
+}
+
+export function loadCachedUserProfile(): AuthUser | null {
+  try {
+    const raw = localStorage.getItem(PROFILE_STORAGE_KEY);
+    if (!raw) return null;
+    const parsed = JSON.parse(raw) as AuthUser;
+    if (parsed && parsed.role && parsed.name && typeof parsed.id === 'number') {
+      return parsed;
+    }
+    return null;
+  } catch {
+    return null;
+  }
+}
+
+export function clearCachedUserProfile(): void {
+  try {
+    localStorage.removeItem(PROFILE_STORAGE_KEY);
+  } catch {
+    // Ignore
+  }
+}
+
 export async function apiRequest<T>(
   url: string,
   options: {
     method?: string;
     body?: unknown;
     isFormData?: boolean;
+    skipUnauthorizedHandler?: boolean;
   } = {}
 ): Promise<T> {
-  const headers: Record<string, string> = {};
+  const headers: Record<string, string> = {
+    'X-Requested-With': 'XMLHttpRequest',
+  };
   if (authToken) {
     headers['Authorization'] = `Bearer ${authToken}`;
   }
@@ -38,10 +79,12 @@ export async function apiRequest<T>(
     method: options.method || 'GET',
     headers,
     body: fetchBody,
+    credentials: 'include',
   });
 
-  if (res.status === 401 && authToken) {
+  if (res.status === 401 && !options.skipUnauthorizedHandler) {
     authToken = null;
+    clearCachedUserProfile();
     if (onUnauthorizedCallback) onUnauthorizedCallback();
   }
 
@@ -62,11 +105,13 @@ export async function apiRequest<T>(
 }
 
 export async function downloadAuthenticatedFile(url: string, filename: string): Promise<void> {
-  const headers: Record<string, string> = {};
+  const headers: Record<string, string> = {
+    'X-Requested-With': 'XMLHttpRequest',
+  };
   if (authToken) {
     headers['Authorization'] = `Bearer ${authToken}`;
   }
-  const res = await fetch(url, { headers });
+  const res = await fetch(url, { headers, credentials: 'include' });
   if (!res.ok) {
     throw new Error('Download failed.');
   }

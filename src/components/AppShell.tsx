@@ -2,6 +2,7 @@ import React, { useState } from 'react';
 import {
   Bell,
   BookOpen,
+  Camera,
   ClipboardCheck,
   Globe,
   Home,
@@ -10,20 +11,24 @@ import {
   LogOut,
   Menu,
   MessageSquare,
+  Phone,
+  RotateCcw,
   Shield,
   X,
 } from 'lucide-react';
-import { ASSETS } from '../constants';
 import { createTranslator } from '../i18n';
+import { apiRequest } from '../lib/api';
 import { AuthUser, Language, PortalTab } from '../types';
 import { PWAInstallButton } from './PWAInstallButton';
 
 interface AppShellProps {
   user: AuthUser;
   lang: Language;
+  logoUrl: string;
   activeTab: PortalTab;
   onSelectTab: (tab: PortalTab) => void;
   onToggleLang: () => void;
+  onLogoUpdated: (newUrl: string) => void;
   onSignOut: () => void;
   children: React.ReactNode;
 }
@@ -31,20 +36,30 @@ interface AppShellProps {
 export const AppShell: React.FC<AppShellProps> = ({
   user,
   lang,
+  logoUrl,
   activeTab,
   onSelectTab,
   onToggleLang,
+  onLogoUpdated,
   onSignOut,
   children,
 }) => {
   const t = createTranslator(lang);
+  const isStaff = user.role === 'super_owner' || user.role === 'admin';
   const [drawerOpen, setDrawerOpen] = useState(false);
+
+  // App Icon Upload Modal (Owner / Admin ONLY)
+  const [showLogoModal, setShowLogoModal] = useState(false);
+  const [logoFile, setLogoFile] = useState<File | null>(null);
+  const [logoBusy, setLogoBusy] = useState(false);
+  const [logoError, setLogoError] = useState<string | null>(null);
 
   const navItems: Array<{ id: PortalTab; label: string; icon: React.ComponentType<{ className?: string }> }> = [
     { id: 'overview', label: t('navOverview'), icon: Home },
     { id: 'academics', label: t('navAcademics'), icon: BookOpen },
     { id: 'notices', label: t('navNotices'), icon: Bell },
     { id: 'messages', label: t('navMessages'), icon: MessageSquare },
+    { id: 'teachers', label: t('navTeachers'), icon: Phone },
     { id: 'gallery', label: t('navGallery'), icon: Images },
     { id: 'quiz', label: t('navQuiz'), icon: ClipboardCheck },
   ];
@@ -65,21 +80,76 @@ export const AppShell: React.FC<AppShellProps> = ({
       ? `${t('roleAdmin')} · Slot ${user.slotNumber}`
       : `${user.student?.class_level === 9 ? 'Class 9' : 'Class 10'} · Roll ${user.student?.roll_number}`;
 
+  const handleUploadLogo = async (e: React.FormEvent) => {
+    e.preventDefault();
+    if (!logoFile) return;
+    setLogoBusy(true);
+    setLogoError(null);
+    try {
+      const fd = new FormData();
+      fd.append('logo', logoFile);
+      const res = await apiRequest<{ logoUrl: string }>('/api/settings/logo', {
+        method: 'POST',
+        body: fd,
+        isFormData: true,
+      });
+      onLogoUpdated(res.logoUrl);
+      setLogoFile(null);
+      setShowLogoModal(false);
+    } catch (err) {
+      setLogoError(err instanceof Error ? err.message : 'Icon upload failed');
+    } finally {
+      setLogoBusy(false);
+    }
+  };
+
+  const handleResetLogo = async () => {
+    setLogoBusy(true);
+    setLogoError(null);
+    try {
+      const res = await apiRequest<{ logoUrl: string }>('/api/settings/logo', { method: 'DELETE' });
+      onLogoUpdated(res.logoUrl);
+      setShowLogoModal(false);
+    } catch (err) {
+      setLogoError(err instanceof Error ? err.message : 'Reset failed');
+    } finally {
+      setLogoBusy(false);
+    }
+  };
+
   return (
     <div className="min-h-screen bg-slate-50 flex flex-col lg:flex-row">
       {/* DESKTOP SIDEBAR */}
       <aside className="hidden lg:flex lg:flex-col lg:w-64 lg:fixed lg:inset-y-0 bg-white border-r border-slate-200 z-30 no-print">
-        <div className="p-5 border-b border-slate-100 flex items-center gap-3">
-          <img
-            src={ASSETS.crest}
-            alt="L.N.K.S High School Crest"
-            referrerPolicy="no-referrer"
-            className="w-10 h-10 rounded-xl object-cover border border-slate-200 shrink-0"
-          />
-          <div className="min-w-0">
-            <p className="font-display text-sm font-bold text-blue-950 truncate">{t('schoolName')}</p>
-            <p className="text-[11px] text-slate-500 truncate">Class 9 &amp; Class 10</p>
+        <div className="p-5 border-b border-slate-100 flex items-center justify-between gap-2">
+          <div className="flex items-center gap-3 min-w-0">
+            <img
+              src={logoUrl}
+              alt="L.N.K.S High School Crest"
+              referrerPolicy="no-referrer"
+              className="w-10 h-10 rounded-xl object-cover border border-slate-200 shrink-0"
+            />
+            <div className="min-w-0">
+              <p className="font-display text-sm font-bold text-blue-950 truncate">{t('schoolName')}</p>
+              <p className="text-[11px] text-slate-500 truncate">Class 9 &amp; Class 10</p>
+            </div>
           </div>
+
+          {isStaff && (
+            <button
+              type="button"
+              onClick={() => {
+                setLogoError(null);
+                setLogoFile(null);
+                setShowLogoModal(true);
+              }}
+              className="min-h-[36px] min-w-[36px] flex items-center justify-center rounded-lg text-slate-500 hover:bg-blue-50 hover:text-blue-900 transition-colors shrink-0 cursor-pointer"
+              title={t('changeAppIcon')}
+              aria-label={t('changeAppIcon')}
+            >
+              <Camera className="w-4 h-4" />
+            </button>
+          )}
         </div>
 
         <nav className="flex-1 p-3 space-y-1 overflow-y-auto" aria-label="Portal Navigation">
@@ -133,6 +203,8 @@ export const AppShell: React.FC<AppShellProps> = ({
               <LogOut className="w-4 h-4" />
             </button>
           </div>
+
+          <p className="pt-1 text-center text-[10px] tracking-wide text-slate-400">CREATE-BY RAJESH BARIK</p>
         </div>
       </aside>
 
@@ -140,7 +212,7 @@ export const AppShell: React.FC<AppShellProps> = ({
       <header className="lg:hidden sticky top-0 z-30 h-[52px] bg-white/95 backdrop-blur-md border-b border-slate-200 px-3 flex items-center justify-between gap-2 no-print">
         <div className="flex items-center gap-2 min-w-0">
           <img
-            src={ASSETS.crest}
+            src={logoUrl}
             alt="L.N.K.S Crest"
             referrerPolicy="no-referrer"
             className="w-8 h-8 rounded-lg object-cover border border-slate-200 shrink-0"
@@ -161,8 +233,12 @@ export const AppShell: React.FC<AppShellProps> = ({
       </header>
 
       {/* MAIN CONTENT VIEWPORT */}
-      <main className="flex-1 lg:pl-64 pb-20 lg:pb-10">
-        <div className="mx-auto max-w-6xl px-4 sm:px-6 lg:px-8 py-5 sm:py-7">{children}</div>
+      <main className="flex-1 lg:pl-64 pb-20 lg:pb-8 flex flex-col min-h-screen">
+        <div className="flex-1 mx-auto w-full max-w-6xl px-4 sm:px-6 lg:px-8 py-5 sm:py-7">{children}</div>
+        <footer className="mx-auto w-full max-w-6xl px-4 sm:px-6 lg:px-8 py-4 border-t border-slate-200/80 flex flex-col sm:flex-row items-center justify-between gap-1 text-[11px] text-slate-400 no-print">
+          <span>L.N.K.S HIGH SCHOOL · Class 9 &amp; Class 10 Portal</span>
+          <span className="text-[10px] tracking-wide text-slate-400">CREATE-BY RAJESH BARIK</span>
+        </footer>
       </main>
 
       {/* MOBILE FIXED BOTTOM TAB BAR (60px — Thumb Zone) */}
@@ -262,7 +338,24 @@ export const AppShell: React.FC<AppShellProps> = ({
             </div>
 
             <div className="pt-2 flex flex-col gap-2.5">
+              {isStaff && (
+                <button
+                  type="button"
+                  onClick={() => {
+                    setDrawerOpen(false);
+                    setLogoError(null);
+                    setLogoFile(null);
+                    setShowLogoModal(true);
+                  }}
+                  className="w-full min-h-[46px] rounded-xl border border-slate-300 bg-white text-slate-800 text-sm font-semibold inline-flex items-center justify-center gap-2 cursor-pointer"
+                >
+                  <Camera className="w-4 h-4 text-blue-900" />
+                  <span>{t('changeAppIcon')}</span>
+                </button>
+              )}
+
               <PWAInstallButton label={t('installApp')} />
+
               <button
                 type="button"
                 onClick={() => {
@@ -274,7 +367,86 @@ export const AppShell: React.FC<AppShellProps> = ({
                 <LogOut className="w-4 h-4" />
                 <span>{t('signOut')}</span>
               </button>
+
+              <p className="pt-1 text-center text-[10px] tracking-wide text-slate-400">CREATE-BY RAJESH BARIK</p>
             </div>
+          </div>
+        </div>
+      )}
+
+      {/* APP ICON / LOGO CHANGE MODAL (STRICTLY OWNER & ADMIN ONLY) */}
+      {isStaff && showLogoModal && (
+        <div className="fixed inset-0 z-50 flex items-center justify-center bg-slate-950/60 p-4 backdrop-blur-sm">
+          <div className="w-full max-w-md rounded-2xl bg-white border border-slate-200 p-6 shadow-xl">
+            <div className="flex items-center justify-between pb-4 border-b border-slate-100">
+              <h3 className="font-display text-lg font-bold text-slate-900">{t('changeAppIcon')}</h3>
+              <button
+                type="button"
+                onClick={() => setShowLogoModal(false)}
+                className="min-h-[40px] min-w-[40px] flex items-center justify-center rounded-lg text-slate-500 hover:bg-slate-100 cursor-pointer"
+              >
+                <X className="w-5 h-5" />
+              </button>
+            </div>
+
+            {logoError && (
+              <div className="mt-4 rounded-xl bg-red-50 border border-red-200 px-3.5 py-2.5 text-sm text-red-800">
+                {logoError}
+              </div>
+            )}
+
+            <div className="mt-5 flex items-center gap-4">
+              <img
+                src={logoUrl}
+                alt="Current LNKS App Icon"
+                referrerPolicy="no-referrer"
+                className="w-16 h-16 rounded-2xl object-cover border border-slate-200 shrink-0"
+              />
+              <p className="text-xs text-slate-600 leading-relaxed">
+                {lang === 'or'
+                  ? 'ଏହି ଲୋଗୋ କେବଳ ମାଲିକ ଓ ଆଡମିନ୍ ବଦଳାଇ ପାରିବେ। ନୂତନ ଫଟୋ ଅପଲୋଡ୍ କଲେ ସମ୍ପୂର୍ଣ୍ଣ ପୋର୍ଟାଲରେ ତୁରନ୍ତ ଦେଖାଯିବ।'
+                  : 'Upload a square PNG, JPG, or WEBP logo to update the L.N.K.S High School App Icon across the entire portal.'}
+              </p>
+            </div>
+
+            <form onSubmit={handleUploadLogo} className="mt-4 space-y-4">
+              <input
+                type="file"
+                required
+                accept="image/png,image/jpeg,image/webp"
+                onChange={(e) => setLogoFile(e.target.files?.[0] || null)}
+                className="w-full text-sm text-slate-600 file:mr-3 file:py-2 file:px-4 file:rounded-lg file:border-0 file:text-xs file:font-semibold file:bg-blue-50 file:text-blue-900"
+              />
+
+              <div className="flex items-center justify-between gap-2 pt-2">
+                <button
+                  type="button"
+                  disabled={logoBusy}
+                  onClick={handleResetLogo}
+                  className="min-h-[42px] px-3 rounded-xl border border-slate-300 text-xs font-semibold text-slate-700 hover:bg-slate-50 inline-flex items-center gap-1.5 cursor-pointer"
+                >
+                  <RotateCcw className="w-3.5 h-3.5" />
+                  <span>{t('resetAppIcon')}</span>
+                </button>
+
+                <div className="flex items-center gap-2">
+                  <button
+                    type="button"
+                    onClick={() => setShowLogoModal(false)}
+                    className="min-h-[42px] px-4 rounded-xl border border-slate-300 text-xs font-semibold text-slate-700 cursor-pointer"
+                  >
+                    {t('cancel')}
+                  </button>
+                  <button
+                    type="submit"
+                    disabled={logoBusy || !logoFile}
+                    className="min-h-[42px] px-5 rounded-xl bg-blue-900 text-white text-xs font-semibold hover:bg-blue-800 disabled:opacity-60 cursor-pointer"
+                  >
+                    {logoBusy ? t('loading') : t('save')}
+                  </button>
+                </div>
+              </div>
+            </form>
           </div>
         </div>
       )}

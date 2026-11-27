@@ -9,6 +9,7 @@ import {
   IdCard,
   Shield,
   FileText,
+  Phone,
 } from 'lucide-react';
 import { ASSETS, formatShortDate, getSubjectLabel } from '../constants';
 import { createTranslator } from '../i18n';
@@ -27,6 +28,7 @@ interface OverviewTabProps {
   summary: DashboardSummary | null;
   notices: SchoolNotice[];
   materials: StudyMaterial[];
+  teachersCount: number;
   onNavigate: (tab: PortalTab) => void;
 }
 
@@ -36,6 +38,7 @@ export const OverviewTab: React.FC<OverviewTabProps> = ({
   summary,
   notices,
   materials,
+  teachersCount,
   onNavigate,
 }) => {
   const t = createTranslator(lang);
@@ -159,10 +162,11 @@ export const OverviewTab: React.FC<OverviewTabProps> = ({
       </section>
 
       {/* Quick Action Shortcuts */}
-      <section className="grid grid-cols-2 sm:grid-cols-4 gap-3">
+      <section className="grid grid-cols-2 sm:grid-cols-5 gap-3">
         {[
           { tab: 'notices' as PortalTab, icon: Bell, label: t('navNotices'), count: summary?.noticesCount ?? 0 },
           { tab: 'messages' as PortalTab, icon: MessageSquare, label: t('navMessages'), count: summary?.messagesCount ?? 0 },
+          { tab: 'teachers' as PortalTab, icon: Phone, label: t('navTeachers'), count: teachersCount },
           { tab: 'gallery' as PortalTab, icon: Images, label: t('navGallery'), count: summary?.galleryCount ?? 0 },
           { tab: 'quiz' as PortalTab, icon: ClipboardCheck, label: t('navQuiz'), count: summary?.quizzesCount ?? 0 },
         ].map((item) => {

@@ -10,7 +10,16 @@ import { OverviewTab } from './components/OverviewTab';
 import { OwnerConsoleTab } from './components/OwnerConsoleTab';
 import { QuizTab } from './components/QuizTab';
 import { StudentIdCardTab } from './components/StudentIdCardTab';
-import { apiRequest, setAuthToken, setUnauthorizedHandler } from './lib/api';
+import { TeachersTab } from './components/TeachersTab';
+import { ASSETS } from './constants';
+import {
+  apiRequest,
+  clearCachedUserProfile,
+  loadCachedUserProfile,
+  saveCachedUserProfile,
+  setAuthToken,
+  setUnauthorizedHandler,
+} from './lib/api';
 import {
   AuthUser,
   DashboardSummary,
@@ -22,12 +31,21 @@ import {
   SchoolNotice,
   StudentMessage,
   StudyMaterial,
+  TeacherContact,
 } from './types';
 
 export default function App() {
-  const [lang, setLang] = useState<Language>('en');
-  const [user, setUser] = useState<AuthUser | null>(null);
+  const [lang, setLang] = useState<Language>(() => {
+    try {
+      return localStorage.getItem('lnks_lang') === 'or' ? 'or' : 'en';
+    } catch {
+      return 'en';
+    }
+  });
+  const [user, setUser] = useState<AuthUser | null>(() => loadCachedUserProfile());
+  const [checkingSession, setCheckingSession] = useState(true);
   const [activeTab, setActiveTab] = useState<PortalTab>('overview');
+  const [logoUrl, setLogoUrl] = useState<string>(ASSETS.crest);
 
   // Shared portal data
   const [summary, setSummary] = useState<DashboardSummary | null>(null);
@@ -37,10 +55,52 @@ export default function App() {
   const [messages, setMessages] = useState<StudentMessage[]>([]);
   const [questions, setQuestions] = useState<QuizQuestion[]>([]);
   const [attempts, setAttempts] = useState<QuizAttempt[]>([]);
+  const [teachers, setTeachers] = useState<TeacherContact[]>([]);
   const [loadingData, setLoadingData] = useState(false);
+
+  // Keep favicon synced when Owner/Admin changes App Icon
+  useEffect(() => {
+    const iconLink = document.querySelector<HTMLLinkElement>('link[rel="icon"]');
+    if (iconLink && logoUrl) {
+      iconLink.href = logoUrl;
+    }
+  }, [logoUrl]);
+
+  // Load public app logo & restore persisted server session on page load/refresh
+  useEffect(() => {
+    let active = true;
+
+    apiRequest<{ logoUrl: string }>('/api/settings/public', { skipUnauthorizedHandler: true })
+      .then((res) => {
+        if (active && res.logoUrl) setLogoUrl(res.logoUrl);
+      })
+      .catch(() => {});
+
+    apiRequest<{ user: AuthUser; token?: string }>('/api/auth/me', { skipUnauthorizedHandler: true })
+      .then((res) => {
+        if (!active) return;
+        if (res.token) setAuthToken(res.token);
+        saveCachedUserProfile(res.user);
+        setUser(res.user);
+      })
+      .catch(() => {
+        if (!active) return;
+        setAuthToken(null);
+        clearCachedUserProfile();
+        setUser(null);
+      })
+      .finally(() => {
+        if (active) setCheckingSession(false);
+      });
+
+    return () => {
+      active = false;
+    };
+  }, []);
 
   useEffect(() => {
     setUnauthorizedHandler(() => {
+      clearCachedUserProfile();
       setUser(null);
       setActiveTab('overview');
     });
@@ -49,13 +109,14 @@ export default function App() {
   const refreshPortalData = useCallback(async () => {
     setLoadingData(true);
     try {
-      const [sumRes, matRes, notRes, galRes, msgRes, quizRes] = await Promise.all([
+      const [sumRes, matRes, notRes, galRes, msgRes, quizRes, teachRes] = await Promise.all([
         apiRequest<DashboardSummary>('/api/dashboard/summary'),
         apiRequest<{ materials: StudyMaterial[] }>('/api/materials'),
         apiRequest<{ notices: SchoolNotice[] }>('/api/notices'),
         apiRequest<{ photos: GalleryPhoto[] }>('/api/gallery'),
         apiRequest<{ messages: StudentMessage[] }>('/api/messages'),
         apiRequest<{ questions: QuizQuestion[]; attempts: QuizAttempt[] }>('/api/quizzes'),
+        apiRequest<{ teachers: TeacherContact[] }>('/api/teachers'),
       ]);
       setSummary(sumRes);
       setMaterials(matRes.materials);
@@ -64,42 +125,67 @@ export default function App() {
       setMessages(msgRes.messages);
       setQuestions(quizRes.questions);
       setAttempts(quizRes.attempts);
+      setTeachers(teachRes.teachers);
     } catch {
-      // Unauthorized errors automatically reset user state via handler
+      // Unauthorized errors reset user state via handler
     } finally {
       setLoadingData(false);
     }
   }, []);
 
   useEffect(() => {
-    if (user) {
+    if (user && !checkingSession) {
       refreshPortalData();
     }
-  }, [user, refreshPortalData]);
+  }, [user, checkingSession, refreshPortalData]);
 
   const handleToggleLang = () => {
-    setLang((prev) => (prev === 'en' ? 'or' : 'en'));
+    setLang((prev) => {
+      const next = prev === 'en' ? 'or' : 'en';
+      try {
+        localStorage.setItem('lnks_lang', next);
+      } catch {
+        // Ignore
+      }
+      return next;
+    });
   };
 
   const handleSignOut = async () => {
     try {
-      await apiRequest('/api/auth/logout', { method: 'POST' });
+      await apiRequest('/api/auth/logout', { method: 'POST', skipUnauthorizedHandler: true });
     } catch {
       // Ignore network errors on logout
     } finally {
       setAuthToken(null);
+      clearCachedUserProfile();
       setUser(null);
       setActiveTab('overview');
     }
   };
+
+  if (checkingSession && !user) {
+    return (
+      <div className="min-h-screen bg-slate-50 flex items-center justify-center p-6">
+        <div className="text-center space-y-2">
+          <p className="font-display text-base font-bold text-blue-950">L.N.K.S HIGH SCHOOL</p>
+          <p className="text-xs text-slate-500">
+            {lang === 'or' ? 'ସେସନ୍ ଯାଞ୍ଚ ହେଉଛି...' : 'Restoring your session...'}
+          </p>
+        </div>
+      </div>
+    );
+  }
 
   if (!user) {
     return (
       <>
         <AuthGate
           lang={lang}
+          logoUrl={logoUrl}
           onToggleLang={handleToggleLang}
           onAuthenticated={(authedUser) => {
+            saveCachedUserProfile(authedUser);
             setUser(authedUser);
             setActiveTab('overview');
           }}
@@ -114,9 +200,11 @@ export default function App() {
       <AppShell
         user={user}
         lang={lang}
+        logoUrl={logoUrl}
         activeTab={activeTab}
         onSelectTab={setActiveTab}
         onToggleLang={handleToggleLang}
+        onLogoUpdated={setLogoUrl}
         onSignOut={handleSignOut}
       >
         {loadingData && !summary ? (
@@ -132,6 +220,7 @@ export default function App() {
                 summary={summary}
                 notices={notices}
                 materials={materials}
+                teachersCount={teachers.length}
                 onNavigate={setActiveTab}
               />
             )}
@@ -163,6 +252,15 @@ export default function App() {
               />
             )}
 
+            {activeTab === 'teachers' && (
+              <TeachersTab
+                user={user}
+                lang={lang}
+                teachers={teachers}
+                onRefresh={refreshPortalData}
+              />
+            )}
+
             {activeTab === 'gallery' && (
               <GalleryTab
                 user={user}
@@ -183,14 +281,17 @@ export default function App() {
             )}
 
             {activeTab === 'idcard' && user.role === 'student' && (
-              <StudentIdCardTab user={user} lang={lang} />
+              <StudentIdCardTab user={user} lang={lang} logoUrl={logoUrl} />
             )}
 
             {activeTab === 'owner' && user.role === 'super_owner' && (
               <OwnerConsoleTab
                 user={user}
                 lang={lang}
-                onUserUpdated={(updated) => setUser(updated)}
+                onUserUpdated={(updated) => {
+                  saveCachedUserProfile(updated);
+                  setUser(updated);
+                }}
                 onRefreshAll={refreshPortalData}
               />
             )}

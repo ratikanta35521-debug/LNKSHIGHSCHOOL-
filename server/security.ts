@@ -1,9 +1,15 @@
 import crypto from 'crypto';
 
-const SESSION_SECRET =
+let activeSessionSecret =
   process.env.SESSION_SECRET && process.env.SESSION_SECRET.length >= 16
     ? process.env.SESSION_SECRET
     : crypto.randomBytes(32).toString('hex');
+
+export function setPersistentSessionSecret(secret: string): void {
+  if (!process.env.SESSION_SECRET && secret && secret.length >= 32) {
+    activeSessionSecret = secret;
+  }
+}
 
 export function hashPassword(password: string): string {
   const salt = crypto.randomBytes(16).toString('hex');
@@ -22,9 +28,16 @@ export function verifyPassword(password: string, storedHash: string): boolean {
   return crypto.timingSafeEqual(derived, storedKey);
 }
 
+export function timingSafeStringEqual(a: string, b: string): boolean {
+  const bufA = Buffer.from(a, 'utf8');
+  const bufB = Buffer.from(b, 'utf8');
+  if (bufA.length !== bufB.length) return false;
+  return crypto.timingSafeEqual(bufA, bufB);
+}
+
 export function generateSessionToken(): { rawToken: string; tokenHash: string } {
   const nonce = crypto.randomBytes(32).toString('hex');
-  const sig = crypto.createHmac('sha256', SESSION_SECRET).update(nonce).digest('hex');
+  const sig = crypto.createHmac('sha256', activeSessionSecret).update(nonce).digest('hex');
   const rawToken = `${nonce}.${sig}`;
   const tokenHash = hashToken(rawToken);
   return { rawToken, tokenHash };
@@ -35,7 +48,7 @@ export function verifyTokenSignature(rawToken: string): boolean {
   if (parts.length !== 2) return false;
   const [nonce, sig] = parts;
   if (!nonce || !sig || nonce.length !== 64 || sig.length !== 64) return false;
-  const expected = crypto.createHmac('sha256', SESSION_SECRET).update(nonce).digest('hex');
+  const expected = crypto.createHmac('sha256', activeSessionSecret).update(nonce).digest('hex');
   try {
     return crypto.timingSafeEqual(Buffer.from(sig, 'hex'), Buffer.from(expected, 'hex'));
   } catch {

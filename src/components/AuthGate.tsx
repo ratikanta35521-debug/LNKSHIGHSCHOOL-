@@ -2,20 +2,22 @@ import React, { useState } from 'react';
 import { Eye, EyeOff, Globe, Lock, ShieldCheck, UserPlus, LogIn } from 'lucide-react';
 import { ASSETS } from '../constants';
 import { createTranslator } from '../i18n';
-import { apiRequest, setAuthToken } from '../lib/api';
+import { apiRequest, saveCachedUserProfile, setAuthToken } from '../lib/api';
 import { AuthUser, Language } from '../types';
 import { PWAInstallButton } from './PWAInstallButton';
 
 interface AuthGateProps {
   lang: Language;
+  logoUrl: string;
   onToggleLang: () => void;
   onAuthenticated: (user: AuthUser) => void;
 }
 
-export const AuthGate: React.FC<AuthGateProps> = ({ lang, onToggleLang, onAuthenticated }) => {
+export const AuthGate: React.FC<AuthGateProps> = ({ lang, logoUrl, onToggleLang, onAuthenticated }) => {
   const t = createTranslator(lang);
   const [portalTab, setPortalTab] = useState<'student' | 'staff'>('student');
   const [studentMode, setStudentMode] = useState<'login' | 'register'>('login');
+  const [staffMode, setStaffMode] = useState<'login' | 'register'>('login');
 
   // Student Login state
   const [studentMobile, setStudentMobile] = useState('');
@@ -34,9 +36,22 @@ export const AuthGate: React.FC<AuthGateProps> = ({ lang, onToggleLang, onAuthen
   const [staffId, setStaffId] = useState('');
   const [staffPassword, setStaffPassword] = useState('');
 
+  // Staff (Owner / Admin) Registration state
+  const [staffRegRole, setStaffRegRole] = useState<'super_owner' | 'admin'>('admin');
+  const [staffRegName, setStaffRegName] = useState('');
+  const [staffRegMobile, setStaffRegMobile] = useState('');
+  const [staffRegPassword, setStaffRegPassword] = useState('');
+  const [staffVerifyPassword, setStaffVerifyPassword] = useState('');
+
   const [showPass, setShowPass] = useState(false);
   const [loading, setLoading] = useState(false);
   const [error, setError] = useState<string | null>(null);
+
+  const finishAuth = (token: string, user: AuthUser) => {
+    setAuthToken(token);
+    saveCachedUserProfile(user);
+    onAuthenticated(user);
+  };
 
   const handleStudentLogin = async (e: React.FormEvent) => {
     e.preventDefault();
@@ -46,9 +61,9 @@ export const AuthGate: React.FC<AuthGateProps> = ({ lang, onToggleLang, onAuthen
       const res = await apiRequest<{ token: string; user: AuthUser }>('/api/auth/student/login', {
         method: 'POST',
         body: { mobile: studentMobile.trim(), password: studentPassword },
+        skipUnauthorizedHandler: true,
       });
-      setAuthToken(res.token);
-      onAuthenticated(res.user);
+      finishAuth(res.token, res.user);
     } catch (err) {
       setError(err instanceof Error ? err.message : 'Login failed');
     } finally {
@@ -75,9 +90,9 @@ export const AuthGate: React.FC<AuthGateProps> = ({ lang, onToggleLang, onAuthen
           mobile: regMobile.trim(),
           password: regPassword,
         },
+        skipUnauthorizedHandler: true,
       });
-      setAuthToken(res.token);
-      onAuthenticated(res.user);
+      finishAuth(res.token, res.user);
     } catch (err) {
       setError(err instanceof Error ? err.message : 'Registration failed');
     } finally {
@@ -93,11 +108,35 @@ export const AuthGate: React.FC<AuthGateProps> = ({ lang, onToggleLang, onAuthen
       const res = await apiRequest<{ token: string; user: AuthUser }>('/api/auth/staff/login', {
         method: 'POST',
         body: { identifier: staffId.trim(), password: staffPassword },
+        skipUnauthorizedHandler: true,
       });
-      setAuthToken(res.token);
-      onAuthenticated(res.user);
+      finishAuth(res.token, res.user);
     } catch (err) {
       setError(err instanceof Error ? err.message : 'Invalid credentials');
+    } finally {
+      setLoading(false);
+    }
+  };
+
+  const handleStaffRegister = async (e: React.FormEvent) => {
+    e.preventDefault();
+    setError(null);
+    setLoading(true);
+    try {
+      const res = await apiRequest<{ token: string; user: AuthUser }>('/api/auth/staff/register', {
+        method: 'POST',
+        body: {
+          role: staffRegRole,
+          full_name: staffRegName.trim(),
+          mobile: staffRegMobile.trim(),
+          password: staffRegPassword,
+          verification_password: staffVerifyPassword.trim(),
+        },
+        skipUnauthorizedHandler: true,
+      });
+      finishAuth(res.token, res.user);
+    } catch (err) {
+      setError(err instanceof Error ? err.message : 'Registration failed');
     } finally {
       setLoading(false);
     }
@@ -110,7 +149,7 @@ export const AuthGate: React.FC<AuthGateProps> = ({ lang, onToggleLang, onAuthen
         <div className="mx-auto max-w-7xl px-4 sm:px-6 lg:px-8 h-16 flex items-center justify-between gap-4">
           <div className="flex items-center gap-3 min-w-0">
             <img
-              src={ASSETS.crest}
+              src={logoUrl}
               alt="L.N.K.S High School Crest"
               referrerPolicy="no-referrer"
               className="w-10 h-10 rounded-xl object-cover border border-slate-200 shrink-0"
@@ -472,80 +511,209 @@ export const AuthGate: React.FC<AuthGateProps> = ({ lang, onToggleLang, onAuthen
                 )}
               </div>
             ) : (
-              /* OWNER / ADMIN DIRECT LOGIN */
+              /* OWNER / ADMIN LOGIN & REGISTRATION */
               <div className="mt-6">
-                <div className="flex items-start gap-3 pb-4 border-b border-slate-200">
-                  <div className="w-10 h-10 rounded-xl bg-blue-50 text-blue-900 flex items-center justify-center shrink-0">
-                    <ShieldCheck className="w-5 h-5" />
-                  </div>
-                  <div>
-                    <h2 className="font-display text-base font-bold text-slate-900">
-                      {lang === 'or' ? 'ସୁପର ମାଲିକ ଓ ୫ ଆଡମିନ୍ ପ୍ରବେଶ' : 'Super Owner & 5 Admin Direct Login'}
-                    </h2>
-                    <p className="text-xs text-slate-600 mt-0.5 leading-relaxed">
-                      {lang === 'or'
-                        ? 'ସୁପର ମାଲିକ କିମ୍ବା ନିଯୁକ୍ତ ଆଡମିନ୍ (Admin 1–5) ସିଧାସଳଖ ନିଜ ଆଇଡି ଓ ପାସୱାର୍ଡ ଦେଇ ପ୍ରବେଶ କରନ୍ତୁ।'
-                        : 'Sign in directly using your exclusive Super Owner ID/Mobile or assigned Admin (1–5) credentials.'}
-                    </p>
-                  </div>
+                <div className="flex items-center justify-between gap-4 border-b border-slate-200 pb-3">
+                  <button
+                    type="button"
+                    onClick={() => {
+                      setStaffMode('login');
+                      setError(null);
+                    }}
+                    className={`min-h-[40px] text-sm font-semibold pb-2 -mb-3.5 border-b-2 transition-colors whitespace-nowrap cursor-pointer ${
+                      staffMode === 'login'
+                        ? 'border-blue-900 text-blue-950'
+                        : 'border-transparent text-slate-500 hover:text-slate-800'
+                    }`}
+                  >
+                    {t('staffLoginTab')}
+                  </button>
+                  <button
+                    type="button"
+                    onClick={() => {
+                      setStaffMode('register');
+                      setError(null);
+                    }}
+                    className={`min-h-[40px] text-sm font-semibold pb-2 -mb-3.5 border-b-2 transition-colors whitespace-nowrap cursor-pointer ${
+                      staffMode === 'register'
+                        ? 'border-blue-900 text-blue-950'
+                        : 'border-transparent text-slate-500 hover:text-slate-800'
+                    }`}
+                  >
+                    {t('staffRegisterTab')}
+                  </button>
                 </div>
 
-                <form onSubmit={handleStaffLogin} className="mt-5 space-y-4">
-                  <div>
-                    <label className="block text-sm font-medium text-slate-700 mb-1.5">
-                      {t('loginIdOrMobile')}
-                    </label>
-                    <input
-                      type="text"
-                      required
-                      value={staffId}
-                      onChange={(e) => setStaffId(e.target.value)}
-                      placeholder="owner@lnksschool or 9999999999"
-                      className="w-full min-h-[46px] rounded-xl border border-slate-300 bg-white px-4 text-sm text-slate-900 focus:border-blue-900 focus:outline-none focus:ring-2 focus:ring-blue-900/15"
-                    />
-                  </div>
-
-                  <div>
-                    <label className="block text-sm font-medium text-slate-700 mb-1.5">
-                      {t('password')}
-                    </label>
-                    <div className="relative">
-                      <input
-                        type={showPass ? 'text' : 'password'}
-                        required
-                        value={staffPassword}
-                        onChange={(e) => setStaffPassword(e.target.value)}
-                        placeholder="••••••••"
-                        className="w-full min-h-[46px] rounded-xl border border-slate-300 bg-white px-4 pr-12 text-sm text-slate-900 focus:border-blue-900 focus:outline-none focus:ring-2 focus:ring-blue-900/15"
-                      />
-                      <button
-                        type="button"
-                        onClick={() => setShowPass(!showPass)}
-                        className="absolute right-1.5 top-1/2 -translate-y-1/2 min-h-[40px] min-w-[40px] flex items-center justify-center text-slate-500 hover:text-slate-800 cursor-pointer"
-                        aria-label={showPass ? 'Hide password' : 'Show password'}
-                      >
-                        {showPass ? <EyeOff className="w-4 h-4" /> : <Eye className="w-4 h-4" />}
-                      </button>
+                {staffMode === 'login' ? (
+                  <>
+                    <div className="mt-5 flex items-start gap-3">
+                      <div className="w-10 h-10 rounded-xl bg-blue-50 text-blue-900 flex items-center justify-center shrink-0">
+                        <ShieldCheck className="w-5 h-5" />
+                      </div>
+                      <div>
+                        <h2 className="font-display text-base font-bold text-slate-900">
+                          {lang === 'or' ? 'ସୁପର ମାଲିକ ଓ ୫ ଆଡମିନ୍ ପ୍ରବେଶ' : 'Super Owner & 5 Admin Direct Login'}
+                        </h2>
+                        <p className="text-xs text-slate-600 mt-0.5 leading-relaxed">
+                          {lang === 'or'
+                            ? 'ସୁପର ମାଲିକ କିମ୍ବା ନିଯୁକ୍ତ ଆଡମିନ୍ (Admin 1–5) ସିଧାସଳଖ ନିଜ ଆଇଡି/ମୋବାଇଲ୍ ଓ ପାସୱାର୍ଡ ଦେଇ ପ୍ରବେଶ କରନ୍ତୁ।'
+                            : 'Sign in directly using your Super Owner ID/Mobile or assigned Admin (1–5) credentials.'}
+                        </p>
+                      </div>
                     </div>
-                  </div>
 
-                  <button
-                    type="submit"
-                    disabled={loading}
-                    className="w-full min-h-[48px] rounded-xl bg-blue-900 text-white text-sm font-semibold hover:bg-blue-800 active:scale-[0.99] transition-all flex items-center justify-center gap-2 disabled:opacity-60 cursor-pointer"
-                  >
-                    <Lock className="w-4 h-4" />
-                    <span>{loading ? t('loading') : t('signIn')}</span>
-                  </button>
-                </form>
+                    <form onSubmit={handleStaffLogin} className="mt-5 space-y-4">
+                      <div>
+                        <label className="block text-sm font-medium text-slate-700 mb-1.5">
+                          {t('loginIdOrMobile')}
+                        </label>
+                        <input
+                          type="text"
+                          required
+                          value={staffId}
+                          onChange={(e) => setStaffId(e.target.value)}
+                          placeholder="owner@lnksschool or 10-digit mobile"
+                          className="w-full min-h-[46px] rounded-xl border border-slate-300 bg-white px-4 text-sm text-slate-900 focus:border-blue-900 focus:outline-none focus:ring-2 focus:ring-blue-900/15"
+                        />
+                      </div>
+
+                      <div>
+                        <label className="block text-sm font-medium text-slate-700 mb-1.5">
+                          {t('password')}
+                        </label>
+                        <div className="relative">
+                          <input
+                            type={showPass ? 'text' : 'password'}
+                            required
+                            value={staffPassword}
+                            onChange={(e) => setStaffPassword(e.target.value)}
+                            placeholder="••••••••"
+                            className="w-full min-h-[46px] rounded-xl border border-slate-300 bg-white px-4 pr-12 text-sm text-slate-900 focus:border-blue-900 focus:outline-none focus:ring-2 focus:ring-blue-900/15"
+                          />
+                          <button
+                            type="button"
+                            onClick={() => setShowPass(!showPass)}
+                            className="absolute right-1.5 top-1/2 -translate-y-1/2 min-h-[40px] min-w-[40px] flex items-center justify-center text-slate-500 hover:text-slate-800 cursor-pointer"
+                            aria-label={showPass ? 'Hide password' : 'Show password'}
+                          >
+                            {showPass ? <EyeOff className="w-4 h-4" /> : <Eye className="w-4 h-4" />}
+                          </button>
+                        </div>
+                      </div>
+
+                      <button
+                        type="submit"
+                        disabled={loading}
+                        className="w-full min-h-[48px] rounded-xl bg-blue-900 text-white text-sm font-semibold hover:bg-blue-800 active:scale-[0.99] transition-all flex items-center justify-center gap-2 disabled:opacity-60 cursor-pointer"
+                      >
+                        <Lock className="w-4 h-4" />
+                        <span>{loading ? t('loading') : t('signIn')}</span>
+                      </button>
+                    </form>
+                  </>
+                ) : (
+                  <form onSubmit={handleStaffRegister} className="mt-5 space-y-3.5">
+                    <div>
+                      <label className="block text-xs font-medium text-slate-700 mb-1">
+                        {t('selectStaffRole')}
+                      </label>
+                      <div className="grid grid-cols-2 gap-1.5 p-1 bg-slate-100 rounded-xl">
+                        <button
+                          type="button"
+                          onClick={() => setStaffRegRole('super_owner')}
+                          className={`min-h-[40px] text-xs font-semibold rounded-lg transition-colors cursor-pointer ${
+                            staffRegRole === 'super_owner' ? 'bg-white text-blue-950 shadow-sm' : 'text-slate-600'
+                          }`}
+                        >
+                          {t('roleSuperOwner')}
+                        </button>
+                        <button
+                          type="button"
+                          onClick={() => setStaffRegRole('admin')}
+                          className={`min-h-[40px] text-xs font-semibold rounded-lg transition-colors cursor-pointer ${
+                            staffRegRole === 'admin' ? 'bg-white text-blue-950 shadow-sm' : 'text-slate-600'
+                          }`}
+                        >
+                          {t('roleAdmin')} (1–5)
+                        </button>
+                      </div>
+                    </div>
+
+                    <div className="grid grid-cols-1 sm:grid-cols-2 gap-3">
+                      <div>
+                        <label className="block text-xs font-medium text-slate-700 mb-1">{t('fullName')}</label>
+                        <input
+                          type="text"
+                          required
+                          value={staffRegName}
+                          onChange={(e) => setStaffRegName(e.target.value)}
+                          placeholder="e.g., Principal / Admin Name"
+                          className="w-full min-h-[44px] rounded-xl border border-slate-300 bg-white px-3.5 text-sm"
+                        />
+                      </div>
+                      <div>
+                        <label className="block text-xs font-medium text-slate-700 mb-1">{t('mobileNumber')}</label>
+                        <input
+                          type="tel"
+                          inputMode="numeric"
+                          maxLength={10}
+                          required
+                          value={staffRegMobile}
+                          onChange={(e) => setStaffRegMobile(e.target.value.replace(/\D/g, '').slice(0, 10))}
+                          placeholder="10-digit mobile"
+                          className="w-full min-h-[44px] rounded-xl border border-slate-300 bg-white px-3.5 text-sm font-mono-num"
+                        />
+                      </div>
+                    </div>
+
+                    <div>
+                      <label className="block text-xs font-medium text-slate-700 mb-1">
+                        {lang === 'or' ? 'ନୂତନ ଲଗଇନ୍ ପାସୱାର୍ଡ (କମ୍ ସେ କମ୍ ୬ ଅକ୍ଷର)' : 'Set Login Password (min 6 chars)'}
+                      </label>
+                      <input
+                        type="password"
+                        minLength={6}
+                        required
+                        value={staffRegPassword}
+                        onChange={(e) => setStaffRegPassword(e.target.value)}
+                        placeholder="Create your login password"
+                        className="w-full min-h-[44px] rounded-xl border border-slate-300 bg-white px-3.5 text-sm"
+                      />
+                    </div>
+
+                    <div>
+                      <label className="block text-xs font-medium text-slate-700 mb-1">
+                        {t('verificationPassword')}
+                      </label>
+                      <input
+                        type="password"
+                        required
+                        value={staffVerifyPassword}
+                        onChange={(e) => setStaffVerifyPassword(e.target.value)}
+                        placeholder="Enter official school verification password"
+                        className="w-full min-h-[44px] rounded-xl border border-slate-300 bg-white px-3.5 text-sm font-mono-num"
+                      />
+                    </div>
+
+                    <button
+                      type="submit"
+                      disabled={loading}
+                      className="w-full min-h-[48px] rounded-xl bg-blue-900 text-white text-sm font-semibold hover:bg-blue-800 active:scale-[0.99] transition-all flex items-center justify-center gap-2 disabled:opacity-60 cursor-pointer"
+                    >
+                      <ShieldCheck className="w-4 h-4" />
+                      <span>{loading ? t('loading') : t('staffRegisterTab')}</span>
+                    </button>
+                  </form>
+                )}
               </div>
             )}
           </section>
         </div>
       </main>
 
-      <footer className="py-4 text-center text-xs text-slate-500 border-t border-slate-200 bg-white">
-        L.N.K.S HIGH SCHOOL · {t('schoolTagline')}
+      <footer className="py-4 px-4 border-t border-slate-200 bg-white flex flex-col sm:flex-row items-center justify-between gap-2 max-w-7xl w-full mx-auto text-xs text-slate-500">
+        <span>L.N.K.S HIGH SCHOOL · {t('schoolTagline')}</span>
+        <span className="text-[10px] tracking-wide text-slate-400">CREATE-BY RAJESH BARIK</span>
       </footer>
     </div>
   );

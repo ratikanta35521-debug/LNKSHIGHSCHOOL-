@@ -13,6 +13,7 @@ import {
   hashToken,
   isValidHttpUrl,
   sanitizeCsvCell,
+  timingSafeStringEqual,
   verifyPassword,
   verifyTokenSignature,
 } from './server/security.ts';
@@ -20,7 +21,12 @@ import {
 initializeDatabase();
 
 const app = express();
+app.set('trust proxy', 1);
 app.use(express.json({ limit: '5mb' }));
+
+const SESSION_COOKIE_NAME = 'lnks_session';
+const DEFAULT_LOGO_URL = '/src/assets/images/school_crest_emblem_1795752364851.jpg';
+const STAFF_VERIFICATION_PASSWORD = process.env.STAFF_VERIFICATION_PASSWORD || 'LNKS@1234HIGHSCHOOL';
 
 // Types attached to authenticated requests
 export interface AuthUser {
@@ -45,6 +51,7 @@ export interface AuthUser {
 interface AuthedRequest extends Request {
   user?: AuthUser;
   tokenHash?: string;
+  rawSessionToken?: string;
 }
 
 const VALID_SUBJECTS = new Set([
@@ -89,6 +96,56 @@ const upload = multer({
   },
 });
 
+function parseCookies(req: Request): Record<string, string> {
+  const raw = req.headers.cookie;
+  const result: Record<string, string> = {};
+  if (!raw) return result;
+  for (const part of raw.split(';')) {
+    const idx = part.indexOf('=');
+    if (idx > 0) {
+      const k = part.slice(0, idx).trim();
+      const v = part.slice(idx + 1).trim();
+      try {
+        result[k] = decodeURIComponent(v);
+      } catch {
+        result[k] = v;
+      }
+    }
+  }
+  return result;
+}
+
+function isHttpsRequest(req: Request): boolean {
+  const proto = String(req.headers['x-forwarded-proto'] || '').split(',')[0].trim().toLowerCase();
+  return req.secure || proto === 'https';
+}
+
+function setSessionCookie(req: Request, res: Response, rawToken: string): void {
+  const maxAgeSec = 7 * 24 * 60 * 60;
+  const parts = [
+    `${SESSION_COOKIE_NAME}=${encodeURIComponent(rawToken)}`,
+    'Path=/',
+    'HttpOnly',
+    `Max-Age=${maxAgeSec}`,
+  ];
+  if (isHttpsRequest(req)) {
+    parts.push('Secure', 'SameSite=None', 'Partitioned');
+  } else {
+    parts.push('SameSite=Lax');
+  }
+  res.setHeader('Set-Cookie', parts.join('; '));
+}
+
+function clearSessionCookie(req: Request, res: Response): void {
+  const parts = [`${SESSION_COOKIE_NAME}=`, 'Path=/', 'HttpOnly', 'Max-Age=0'];
+  if (isHttpsRequest(req)) {
+    parts.push('Secure', 'SameSite=None', 'Partitioned');
+  } else {
+    parts.push('SameSite=Lax');
+  }
+  res.setHeader('Set-Cookie', parts.join('; '));
+}
+
 function createSession(role: 'super_owner' | 'admin' | 'student', subjectId: number): string {
   const { rawToken, tokenHash } = generateSessionToken();
   const now = new Date();
@@ -106,11 +163,43 @@ function revokeSessionsFor(role: string, subjectId: number): void {
 
 function requireAuth(req: AuthedRequest, res: Response, next: NextFunction): void {
   const header = req.headers.authorization;
-  if (!header || !header.startsWith('Bearer ')) {
+  let rawToken = '';
+  let authenticatedViaCookie = false;
+
+  if (header && header.startsWith('Bearer ')) {
+    rawToken = header.slice(7).trim();
+  } else {
+    const cookies = parseCookies(req);
+    if (cookies[SESSION_COOKIE_NAME]) {
+      rawToken = cookies[SESSION_COOKIE_NAME];
+      authenticatedViaCookie = true;
+    }
+  }
+
+  if (!rawToken) {
     res.status(401).json({ error: 'Authentication required' });
     return;
   }
-  const rawToken = header.slice(7).trim();
+
+  // CSRF defense for cookie-authenticated state-changing requests
+  if (authenticatedViaCookie && ['POST', 'PUT', 'PATCH', 'DELETE'].includes(req.method.toUpperCase())) {
+    const xrw = req.headers['x-requested-with'];
+    const origin = req.headers.origin;
+    const expectedHost = String(req.headers['x-forwarded-host'] || req.headers.host || '').toLowerCase();
+    let originMatches = false;
+    if (origin && expectedHost) {
+      try {
+        originMatches = new URL(origin).host.toLowerCase() === expectedHost;
+      } catch {
+        originMatches = false;
+      }
+    }
+    if (xrw !== 'XMLHttpRequest' && !originMatches) {
+      res.status(403).json({ error: 'Cross-site request blocked' });
+      return;
+    }
+  }
+
   if (!verifyTokenSignature(rawToken)) {
     res.status(401).json({ error: 'Invalid session token' });
     return;
@@ -127,6 +216,7 @@ function requireAuth(req: AuthedRequest, res: Response, next: NextFunction): voi
     res.status(401).json({ error: 'Session expired. Please log in again.' });
     return;
   }
+  req.rawSessionToken = rawToken;
 
   if (session.role === 'super_owner') {
     const owner = db
@@ -282,6 +372,7 @@ app.post('/api/auth/student/register', (req: Request, res: Response) => {
 
     const studentId = Number(result.lastInsertRowid);
     const token = createSession('student', studentId);
+    setSessionCookie(req, res, token);
 
     res.status(201).json({
       token,
@@ -348,6 +439,7 @@ app.post('/api/auth/student/login', (req: Request, res: Response) => {
   }
 
   const token = createSession('student', student.id);
+  setSessionCookie(req, res, token);
   res.json({
     token,
     user: {
@@ -395,6 +487,7 @@ app.post('/api/auth/staff/login', (req: Request, res: Response) => {
       return;
     }
     const token = createSession('super_owner', 1);
+    setSessionCookie(req, res, token);
     res.json({
       token,
       user: {
@@ -424,6 +517,7 @@ app.post('/api/auth/staff/login', (req: Request, res: Response) => {
       return;
     }
     const token = createSession('admin', admin.slot_number);
+    setSessionCookie(req, res, token);
     res.json({
       token,
       user: {
@@ -440,13 +534,237 @@ app.post('/api/auth/staff/login', (req: Request, res: Response) => {
   res.status(401).json({ error: 'Invalid Owner / Admin ID or password.' });
 });
 
+// Owner & Admin Registration using Mobile Number + Fixed Verification Password
+app.post('/api/auth/staff/register', (req: Request, res: Response) => {
+  const role = req.body?.role === 'super_owner' ? 'super_owner' : req.body?.role === 'admin' ? 'admin' : null;
+  const fullName = cleanText(req.body?.full_name, 100);
+  const mobile = cleanText(req.body?.mobile, 20).replace(/\s+/g, '');
+  const password = typeof req.body?.password === 'string' ? req.body.password : '';
+  const verificationPassword =
+    typeof req.body?.verification_password === 'string' ? req.body.verification_password.trim() : '';
+
+  if (!role) {
+    res.status(400).json({ error: 'Please select Owner or Admin role.' });
+    return;
+  }
+  if (fullName.length < 2) {
+    res.status(400).json({ error: 'Please enter a valid full name.' });
+    return;
+  }
+  if (!/^\d{10}$/.test(mobile)) {
+    res.status(400).json({ error: 'Please enter a valid 10-digit mobile number.' });
+    return;
+  }
+  if (password.length < 6) {
+    res.status(400).json({ error: 'Personal password must be at least 6 characters.' });
+    return;
+  }
+  if (!timingSafeStringEqual(verificationPassword, STAFF_VERIFICATION_PASSWORD)) {
+    res.status(403).json({ error: 'Invalid school verification password. Registration denied.' });
+    return;
+  }
+
+  const now = new Date().toISOString();
+  const passwordHash = hashPassword(password);
+
+  if (role === 'super_owner') {
+    const adminConflict = db.prepare('SELECT slot_number FROM admin_slots WHERE LOWER(login_id) = ?').get(mobile);
+    if (adminConflict) {
+      res.status(409).json({ error: 'This mobile number is already assigned to an Admin slot.' });
+      return;
+    }
+
+    db.prepare(
+      `UPDATE owner
+       SET name = ?, login_id = ?, mobile = ?, password_hash = ?, updated_at = ?
+       WHERE id = 1`
+    ).run(fullName, mobile, mobile, passwordHash, now);
+
+    revokeSessionsFor('super_owner', 1);
+    const token = createSession('super_owner', 1);
+    setSessionCookie(req, res, token);
+
+    res.status(201).json({
+      token,
+      user: {
+        role: 'super_owner',
+        id: 1,
+        name: fullName,
+        loginId: mobile,
+        mobile,
+      },
+    });
+    return;
+  }
+
+  // Admin Registration: assign to first open slot (1..5)
+  const ownerRow = db.prepare('SELECT login_id, mobile FROM owner WHERE id = 1').get() as {
+    login_id: string;
+    mobile: string;
+  };
+  if (ownerRow.login_id.toLowerCase() === mobile || ownerRow.mobile === mobile) {
+    res.status(409).json({ error: 'This mobile number is registered to the Super Owner.' });
+    return;
+  }
+
+  const existingAdmin = db
+    .prepare('SELECT slot_number FROM admin_slots WHERE LOWER(login_id) = ?')
+    .get(mobile) as { slot_number: number } | undefined;
+  if (existingAdmin) {
+    res.status(409).json({ error: 'This mobile number is already registered as an Admin. Please log in.' });
+    return;
+  }
+
+  const freeSlot = db
+    .prepare('SELECT slot_number FROM admin_slots WHERE login_id IS NULL ORDER BY slot_number ASC LIMIT 1')
+    .get() as { slot_number: number } | undefined;
+  if (!freeSlot) {
+    res.status(409).json({ error: 'All 5 Admin slots are currently assigned. Contact the Super Owner.' });
+    return;
+  }
+
+  db.prepare(
+    `UPDATE admin_slots
+     SET name = ?, login_id = ?, password_hash = ?, is_active = 1, assigned_at = ?, updated_at = ?
+     WHERE slot_number = ?`
+  ).run(fullName, mobile, passwordHash, now, now, freeSlot.slot_number);
+
+  const token = createSession('admin', freeSlot.slot_number);
+  setSessionCookie(req, res, token);
+
+  res.status(201).json({
+    token,
+    user: {
+      role: 'admin',
+      id: freeSlot.slot_number,
+      slotNumber: freeSlot.slot_number,
+      name: fullName,
+      loginId: mobile,
+    },
+  });
+});
+
 app.get('/api/auth/me', requireAuth, (req: AuthedRequest, res: Response) => {
-  res.json({ user: req.user });
+  res.json({ user: req.user, token: req.rawSessionToken });
 });
 
 app.post('/api/auth/logout', requireAuth, (req: AuthedRequest, res: Response) => {
   if (req.tokenHash) {
     db.prepare('DELETE FROM sessions WHERE token_hash = ?').run(req.tokenHash);
+  }
+  clearSessionCookie(req, res);
+  res.json({ ok: true });
+});
+
+// ============================================================================
+// PUBLIC SETTINGS & APP ICON/LOGO MANAGEMENT (Owner / Admin Only)
+// ============================================================================
+app.get('/api/settings/public', (_req: Request, res: Response) => {
+  const logoRow = db.prepare("SELECT value FROM app_settings WHERE key = 'school_logo_url'").get() as
+    | { value: string }
+    | undefined;
+  res.json({ logoUrl: logoRow?.value || DEFAULT_LOGO_URL });
+});
+
+app.post('/api/settings/logo', requireAuth, requireStaff, upload.single('logo'), (req: AuthedRequest, res: Response) => {
+  if (!req.file || !req.file.mimetype.startsWith('image/')) {
+    if (req.file) fs.unlinkSync(req.file.path);
+    res.status(400).json({ error: 'Please upload a valid image (JPG, PNG, or WEBP).' });
+    return;
+  }
+  const logoUrl = `/api/uploads/${req.file.filename}`;
+  const now = new Date().toISOString();
+  db.prepare(
+    `INSERT INTO app_settings (key, value, updated_at) VALUES ('school_logo_url', ?, ?)
+     ON CONFLICT(key) DO UPDATE SET value = excluded.value, updated_at = excluded.updated_at`
+  ).run(logoUrl, now);
+
+  res.json({ logoUrl });
+});
+
+app.delete('/api/settings/logo', requireAuth, requireStaff, (_req: AuthedRequest, res: Response) => {
+  db.prepare("DELETE FROM app_settings WHERE key = 'school_logo_url'").run();
+  res.json({ logoUrl: DEFAULT_LOGO_URL });
+});
+
+// ============================================================================
+// TEACHERS DIRECTORY & EDITABLE CONTACTS (Owner / Admin Editable)
+// ============================================================================
+app.get('/api/teachers', requireAuth, (_req: AuthedRequest, res: Response) => {
+  const teachers = db.prepare('SELECT * FROM teachers ORDER BY id ASC').all();
+  res.json({ teachers });
+});
+
+app.post('/api/teachers', requireAuth, requireStaff, (req: AuthedRequest, res: Response) => {
+  const name = cleanText(req.body?.name, 100);
+  const designation = cleanText(req.body?.designation, 100) || 'Assistant Teacher';
+  const subject = cleanText(req.body?.subject, 120);
+  const classAssigned = cleanText(req.body?.class_assigned, 50) || 'Class 9 & 10';
+  const phone = cleanText(req.body?.phone, 25);
+
+  if (name.length < 2 || !subject || !phone) {
+    res.status(400).json({ error: 'Teacher name, subject, and contact number are required.' });
+    return;
+  }
+
+  const now = new Date().toISOString();
+  const result = db
+    .prepare(
+      `INSERT INTO teachers (name, designation, subject, class_assigned, phone, updated_at)
+       VALUES (?, ?, ?, ?, ?, ?)`
+    )
+    .run(name, designation, subject, classAssigned, phone, now);
+
+  const created = db.prepare('SELECT * FROM teachers WHERE id = ?').get(result.lastInsertRowid);
+  res.status(201).json({ teacher: created });
+});
+
+app.put('/api/teachers/:id', requireAuth, requireStaff, (req: AuthedRequest, res: Response) => {
+  const id = Number(req.params.id);
+  const existing = db.prepare('SELECT * FROM teachers WHERE id = ?').get(id) as
+    | {
+        id: number;
+        name: string;
+        designation: string;
+        subject: string;
+        class_assigned: string;
+        phone: string;
+      }
+    | undefined;
+
+  if (!existing) {
+    res.status(404).json({ error: 'Teacher record not found.' });
+    return;
+  }
+
+  const name = cleanText(req.body?.name, 100) || existing.name;
+  const designation = cleanText(req.body?.designation, 100) || existing.designation;
+  const subject = cleanText(req.body?.subject, 120) || existing.subject;
+  const classAssigned = cleanText(req.body?.class_assigned, 50) || existing.class_assigned;
+  const phone = cleanText(req.body?.phone, 25);
+
+  if (!phone || phone.length < 7) {
+    res.status(400).json({ error: 'Please enter a valid contact number.' });
+    return;
+  }
+
+  const now = new Date().toISOString();
+  db.prepare(
+    `UPDATE teachers
+     SET name = ?, designation = ?, subject = ?, class_assigned = ?, phone = ?, updated_at = ?
+     WHERE id = ?`
+  ).run(name, designation, subject, classAssigned, phone, now, id);
+
+  const updated = db.prepare('SELECT * FROM teachers WHERE id = ?').get(id);
+  res.json({ teacher: updated });
+});
+
+app.delete('/api/teachers/:id', requireAuth, requireStaff, (req: AuthedRequest, res: Response) => {
+  const id = Number(req.params.id);
+  const del = db.prepare('DELETE FROM teachers WHERE id = ?').run(id);
+  if (del.changes === 0) {
+    res.status(404).json({ error: 'Teacher not found.' });
+    return;
   }
   res.json({ ok: true });
 });
@@ -1497,6 +1815,7 @@ app.post('/api/owner/transfer-ownership', requireAuth, requireSuperOwner, (req: 
   // Invalidate ALL previous owner sessions and issue a fresh token for the transferred owner
   revokeSessionsFor('super_owner', 1);
   const newToken = createSession('super_owner', 1);
+  setSessionCookie(req, res, newToken);
 
   res.json({
     ok: true,
@@ -1584,6 +1903,7 @@ app.get('/api/owner/backup/export', requireAuth, requireSuperOwner, (_req: Authe
       messages: db.prepare('SELECT * FROM messages').all(),
       message_replies: db.prepare('SELECT * FROM message_replies').all(),
       quiz_questions: db.prepare('SELECT * FROM quiz_questions').all(),
+      teachers: db.prepare('SELECT * FROM teachers').all(),
     },
   };
 
