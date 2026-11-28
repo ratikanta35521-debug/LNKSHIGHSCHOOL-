@@ -52,6 +52,15 @@ export function clearCachedUserProfile(): void {
   }
 }
 
+export class ApiError extends Error {
+  status: number;
+  constructor(message: string, status: number) {
+    super(message);
+    this.name = 'ApiError';
+    this.status = status;
+  }
+}
+
 export async function apiRequest<T>(
   url: string,
   options: {
@@ -95,7 +104,7 @@ export async function apiRequest<T>(
       const data = await res.json().catch(() => ({}));
       if (data?.error) errMsg = data.error;
     }
-    throw new Error(errMsg);
+    throw new ApiError(errMsg, res.status);
   }
 
   if (contentType.includes('application/json')) {

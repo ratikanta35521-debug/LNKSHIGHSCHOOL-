@@ -50,7 +50,9 @@ export const AppShell: React.FC<AppShellProps> = ({
 
   // App Icon Upload Modal (Owner / Admin ONLY)
   const [showLogoModal, setShowLogoModal] = useState(false);
+  const [logoMode, setLogoMode] = useState<'upload' | 'url'>('upload');
   const [logoFile, setLogoFile] = useState<File | null>(null);
+  const [logoUrlInput, setLogoUrlInput] = useState('');
   const [logoBusy, setLogoBusy] = useState(false);
   const [logoError, setLogoError] = useState<string | null>(null);
 
@@ -82,22 +84,39 @@ export const AppShell: React.FC<AppShellProps> = ({
 
   const handleUploadLogo = async (e: React.FormEvent) => {
     e.preventDefault();
-    if (!logoFile) return;
     setLogoBusy(true);
     setLogoError(null);
     try {
-      const fd = new FormData();
-      fd.append('logo', logoFile);
-      const res = await apiRequest<{ logoUrl: string }>('/api/settings/logo', {
-        method: 'POST',
-        body: fd,
-        isFormData: true,
-      });
+      let res: { logoUrl: string };
+      if (logoMode === 'url') {
+        const trimmed = logoUrlInput.trim();
+        if (!trimmed) {
+          setLogoBusy(false);
+          return;
+        }
+        res = await apiRequest<{ logoUrl: string }>('/api/settings/logo', {
+          method: 'POST',
+          body: { logo_url: trimmed },
+        });
+      } else {
+        if (!logoFile) {
+          setLogoBusy(false);
+          return;
+        }
+        const fd = new FormData();
+        fd.append('logo', logoFile);
+        res = await apiRequest<{ logoUrl: string }>('/api/settings/logo', {
+          method: 'POST',
+          body: fd,
+          isFormData: true,
+        });
+      }
       onLogoUpdated(res.logoUrl);
       setLogoFile(null);
+      setLogoUrlInput('');
       setShowLogoModal(false);
     } catch (err) {
-      setLogoError(err instanceof Error ? err.message : 'Icon upload failed');
+      setLogoError(err instanceof Error ? err.message : 'Icon update failed');
     } finally {
       setLogoBusy(false);
     }
@@ -409,14 +428,52 @@ export const AppShell: React.FC<AppShellProps> = ({
               </p>
             </div>
 
+            <div className="mt-4 flex rounded-xl bg-slate-100 p-1 text-xs font-semibold">
+              <button
+                type="button"
+                onClick={() => {
+                  setLogoMode('upload');
+                  setLogoError(null);
+                }}
+                className={`flex-1 py-2 rounded-lg transition-colors cursor-pointer ${
+                  logoMode === 'upload' ? 'bg-white text-blue-950 shadow-xs' : 'text-slate-600'
+                }`}
+              >
+                {lang === 'or' ? 'ଫଟୋ ଅପଲୋଡ୍' : 'Upload Image'}
+              </button>
+              <button
+                type="button"
+                onClick={() => {
+                  setLogoMode('url');
+                  setLogoError(null);
+                }}
+                className={`flex-1 py-2 rounded-lg transition-colors cursor-pointer ${
+                  logoMode === 'url' ? 'bg-white text-blue-950 shadow-xs' : 'text-slate-600'
+                }`}
+              >
+                {lang === 'or' ? 'ଇମେଜ୍ ଲିଙ୍କ୍ (URL)' : 'Image URL'}
+              </button>
+            </div>
+
             <form onSubmit={handleUploadLogo} className="mt-4 space-y-4">
-              <input
-                type="file"
-                required
-                accept="image/png,image/jpeg,image/webp"
-                onChange={(e) => setLogoFile(e.target.files?.[0] || null)}
-                className="w-full text-sm text-slate-600 file:mr-3 file:py-2 file:px-4 file:rounded-lg file:border-0 file:text-xs file:font-semibold file:bg-blue-50 file:text-blue-900"
-              />
+              {logoMode === 'upload' ? (
+                <input
+                  type="file"
+                  required
+                  accept="image/png,image/jpeg,image/webp"
+                  onChange={(e) => setLogoFile(e.target.files?.[0] || null)}
+                  className="w-full text-sm text-slate-600 file:mr-3 file:py-2 file:px-4 file:rounded-lg file:border-0 file:text-xs file:font-semibold file:bg-blue-50 file:text-blue-900"
+                />
+              ) : (
+                <input
+                  type="url"
+                  required
+                  value={logoUrlInput}
+                  onChange={(e) => setLogoUrlInput(e.target.value)}
+                  placeholder="https://example.com/lnks-logo.png"
+                  className="w-full min-h-[44px] px-3.5 rounded-xl border border-slate-300 text-sm text-slate-900 focus:outline-none focus:ring-2 focus:ring-blue-800/20 focus:border-blue-800"
+                />
+              )}
 
               <div className="flex items-center justify-between gap-2 pt-2">
                 <button
@@ -439,7 +496,7 @@ export const AppShell: React.FC<AppShellProps> = ({
                   </button>
                   <button
                     type="submit"
-                    disabled={logoBusy || !logoFile}
+                    disabled={logoBusy || (logoMode === 'upload' ? !logoFile : !logoUrlInput.trim())}
                     className="min-h-[42px] px-5 rounded-xl bg-blue-900 text-white text-xs font-semibold hover:bg-blue-800 disabled:opacity-60 cursor-pointer"
                   >
                     {logoBusy ? t('loading') : t('save')}

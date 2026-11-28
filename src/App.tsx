@@ -13,6 +13,7 @@ import { StudentIdCardTab } from './components/StudentIdCardTab';
 import { TeachersTab } from './components/TeachersTab';
 import { ASSETS } from './constants';
 import {
+  ApiError,
   apiRequest,
   clearCachedUserProfile,
   loadCachedUserProfile,
@@ -66,7 +67,7 @@ export default function App() {
     }
   }, [logoUrl]);
 
-  // Load public app logo & restore persisted server session on page load/refresh
+  // Load public app logo & verify persisted backend session on page load/refresh
   useEffect(() => {
     let active = true;
 
@@ -76,22 +77,34 @@ export default function App() {
       })
       .catch(() => {});
 
-    apiRequest<{ user: AuthUser; token?: string }>('/api/auth/me', { skipUnauthorizedHandler: true })
-      .then((res) => {
+    const verifySession = async (attempt = 0): Promise<void> => {
+      try {
+        const res = await apiRequest<{ user: AuthUser; token?: string }>('/api/auth/me', {
+          skipUnauthorizedHandler: true,
+        });
         if (!active) return;
         if (res.token) setAuthToken(res.token);
         saveCachedUserProfile(res.user);
         setUser(res.user);
-      })
-      .catch(() => {
+      } catch (err) {
         if (!active) return;
-        setAuthToken(null);
-        clearCachedUserProfile();
-        setUser(null);
-      })
-      .finally(() => {
+        const isAuthRejection = err instanceof ApiError && (err.status === 401 || err.status === 403);
+        if (!isAuthRejection && attempt < 1) {
+          await new Promise((resolve) => setTimeout(resolve, 1000));
+          if (active) return verifySession(attempt + 1);
+          return;
+        }
+        if (isAuthRejection || !loadCachedUserProfile()) {
+          setAuthToken(null);
+          clearCachedUserProfile();
+          setUser(null);
+        }
+      } finally {
         if (active) setCheckingSession(false);
-      });
+      }
+    };
+
+    verifySession();
 
     return () => {
       active = false;
