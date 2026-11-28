@@ -33,6 +33,51 @@ interface AppShellProps {
   children: React.ReactNode;
 }
 
+/**
+ * Resizes and compresses an uploaded image file to max 256x256px on an offscreen canvas
+ * and returns a compact Base64 data URI suitable for permanent Turso cloud storage.
+ */
+async function compressIconToBase64(file: File, maxSize = 256): Promise<string> {
+  const objectUrl = URL.createObjectURL(file);
+  try {
+    const img = await new Promise<HTMLImageElement>((resolve, reject) => {
+      const el = new Image();
+      el.onload = () => resolve(el);
+      el.onerror = () => reject(new Error('Could not decode selected image file.'));
+      el.src = objectUrl;
+    });
+
+    const scale = Math.min(1, maxSize / Math.max(img.width || 1, img.height || 1));
+    const width = Math.max(1, Math.round(img.width * scale));
+    const height = Math.max(1, Math.round(img.height * scale));
+
+    const canvas = document.createElement('canvas');
+    canvas.width = width;
+    canvas.height = height;
+    const ctx = canvas.getContext('2d');
+    if (!ctx) {
+      throw new Error('Canvas compression unavailable in this browser.');
+    }
+    ctx.imageSmoothingEnabled = true;
+    ctx.imageSmoothingQuality = 'high';
+    ctx.clearRect(0, 0, width, height);
+    ctx.drawImage(img, 0, 0, width, height);
+
+    // Prefer compact WebP (supports transparency); fall back to PNG or JPEG cleanly
+    const webp = canvas.toDataURL('image/webp', 0.85);
+    if (webp.startsWith('data:image/webp;base64,') && webp.length <= 200_000) {
+      return webp;
+    }
+    const png = canvas.toDataURL('image/png');
+    if (png.length <= 200_000) {
+      return png;
+    }
+    return canvas.toDataURL('image/jpeg', 0.82);
+  } finally {
+    URL.revokeObjectURL(objectUrl);
+  }
+}
+
 export const AppShell: React.FC<AppShellProps> = ({
   user,
   lang,
@@ -52,6 +97,7 @@ export const AppShell: React.FC<AppShellProps> = ({
   const [showLogoModal, setShowLogoModal] = useState(false);
   const [logoMode, setLogoMode] = useState<'upload' | 'url'>('upload');
   const [logoFile, setLogoFile] = useState<File | null>(null);
+  const [compressedPreview, setCompressedPreview] = useState<string | null>(null);
   const [logoUrlInput, setLogoUrlInput] = useState('');
   const [logoBusy, setLogoBusy] = useState(false);
   const [logoError, setLogoError] = useState<string | null>(null);
@@ -82,37 +128,47 @@ export const AppShell: React.FC<AppShellProps> = ({
       ? `${t('roleAdmin')} · Slot ${user.slotNumber}`
       : `${user.student?.class_level === 9 ? 'Class 9' : 'Class 10'} · Roll ${user.student?.roll_number}`;
 
+  const handleLogoFileSelected = async (file: File | null) => {
+    setLogoFile(file);
+    setCompressedPreview(null);
+    setLogoError(null);
+    if (!file) return;
+    try {
+      const base64 = await compressIconToBase64(file, 256);
+      setCompressedPreview(base64);
+    } catch (err) {
+      setLogoError(err instanceof Error ? err.message : 'Could not process image file');
+    }
+  };
+
   const handleUploadLogo = async (e: React.FormEvent) => {
     e.preventDefault();
     setLogoBusy(true);
     setLogoError(null);
     try {
-      let res: { logoUrl: string };
+      let iconPayload = '';
       if (logoMode === 'url') {
-        const trimmed = logoUrlInput.trim();
-        if (!trimmed) {
+        iconPayload = logoUrlInput.trim();
+        if (!iconPayload) {
           setLogoBusy(false);
           return;
         }
-        res = await apiRequest<{ logoUrl: string }>('/api/settings/logo', {
-          method: 'POST',
-          body: { logo_url: trimmed },
-        });
       } else {
         if (!logoFile) {
           setLogoBusy(false);
           return;
         }
-        const fd = new FormData();
-        fd.append('logo', logoFile);
-        res = await apiRequest<{ logoUrl: string }>('/api/settings/logo', {
-          method: 'POST',
-          body: fd,
-          isFormData: true,
-        });
+        iconPayload = compressedPreview || (await compressIconToBase64(logoFile, 256));
       }
-      onLogoUpdated(res.logoUrl);
+
+      const res = await apiRequest<{ icon?: string; logoUrl?: string }>('/api/icon', {
+        method: 'POST',
+        body: { icon: iconPayload },
+      });
+      const savedIcon = res.icon || res.logoUrl || iconPayload;
+      onLogoUpdated(savedIcon);
       setLogoFile(null);
+      setCompressedPreview(null);
       setLogoUrlInput('');
       setShowLogoModal(false);
     } catch (err) {
@@ -126,8 +182,11 @@ export const AppShell: React.FC<AppShellProps> = ({
     setLogoBusy(true);
     setLogoError(null);
     try {
-      const res = await apiRequest<{ logoUrl: string }>('/api/settings/logo', { method: 'DELETE' });
-      onLogoUpdated(res.logoUrl);
+      const res = await apiRequest<{ icon?: string; logoUrl?: string }>('/api/icon', { method: 'DELETE' });
+      const fallbackIcon = res.icon || res.logoUrl;
+      if (fallbackIcon) onLogoUpdated(fallbackIcon);
+      setCompressedPreview(null);
+      setLogoFile(null);
       setShowLogoModal(false);
     } catch (err) {
       setLogoError(err instanceof Error ? err.message : 'Reset failed');
@@ -160,6 +219,8 @@ export const AppShell: React.FC<AppShellProps> = ({
               onClick={() => {
                 setLogoError(null);
                 setLogoFile(null);
+                setCompressedPreview(null);
+                setLogoUrlInput('');
                 setShowLogoModal(true);
               }}
               className="min-h-[36px] min-w-[36px] flex items-center justify-center rounded-lg text-slate-500 hover:bg-blue-50 hover:text-blue-900 transition-colors shrink-0 cursor-pointer"
@@ -364,6 +425,8 @@ export const AppShell: React.FC<AppShellProps> = ({
                     setDrawerOpen(false);
                     setLogoError(null);
                     setLogoFile(null);
+                    setCompressedPreview(null);
+                    setLogoUrlInput('');
                     setShowLogoModal(true);
                   }}
                   className="w-full min-h-[46px] rounded-xl border border-slate-300 bg-white text-slate-800 text-sm font-semibold inline-flex items-center justify-center gap-2 cursor-pointer"
@@ -416,15 +479,21 @@ export const AppShell: React.FC<AppShellProps> = ({
 
             <div className="mt-5 flex items-center gap-4">
               <img
-                src={logoUrl}
+                src={
+                  logoMode === 'upload' && compressedPreview
+                    ? compressedPreview
+                    : logoMode === 'url' && logoUrlInput.trim().startsWith('http')
+                    ? logoUrlInput.trim()
+                    : logoUrl
+                }
                 alt="Current LNKS App Icon"
                 referrerPolicy="no-referrer"
                 className="w-16 h-16 rounded-2xl object-cover border border-slate-200 shrink-0"
               />
               <p className="text-xs text-slate-600 leading-relaxed">
                 {lang === 'or'
-                  ? 'ଏହି ଲୋଗୋ କେବଳ ମାଲିକ ଓ ଆଡମିନ୍ ବଦଳାଇ ପାରିବେ। ନୂତନ ଫଟୋ ଅପଲୋଡ୍ କଲେ ସମ୍ପୂର୍ଣ୍ଣ ପୋର୍ଟାଲରେ ତୁରନ୍ତ ଦେଖାଯିବ।'
-                  : 'Upload a square PNG, JPG, or WEBP logo to update the L.N.K.S High School App Icon across the entire portal.'}
+                  ? 'ଏହି ଲୋଗୋ କେବଳ ମାଲିକ ଓ ଆଡମିନ୍ ବଦଳାଇ ପାରିବେ। ଅପଲୋଡ୍ ଫଟୋ ସ୍ୱୟଂଚାଳିତ ଭାବେ 256×256px ରେ ସଙ୍କୁଚିତ ହୋଇ କ୍ଲାଉଡ୍ ଡାଟାବେସରେ ସ୍ଥାୟୀ ଭାବେ ସେଭ୍ ହେବ।'
+                  : 'Uploaded images are automatically resized to 256×256px and saved permanently in the Turso database, updating both the portal header and browser favicon.'}
               </p>
             </div>
 
@@ -461,7 +530,7 @@ export const AppShell: React.FC<AppShellProps> = ({
                   type="file"
                   required
                   accept="image/png,image/jpeg,image/webp"
-                  onChange={(e) => setLogoFile(e.target.files?.[0] || null)}
+                  onChange={(e) => handleLogoFileSelected(e.target.files?.[0] || null)}
                   className="w-full text-sm text-slate-600 file:mr-3 file:py-2 file:px-4 file:rounded-lg file:border-0 file:text-xs file:font-semibold file:bg-blue-50 file:text-blue-900"
                 />
               ) : (

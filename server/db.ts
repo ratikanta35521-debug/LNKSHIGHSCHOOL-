@@ -273,6 +273,10 @@ const SCHEMA_STATEMENTS: string[] = [
     created_at TEXT NOT NULL,
     FOREIGN KEY (student_id) REFERENCES students(id) ON DELETE CASCADE
   )`,
+  `CREATE TABLE IF NOT EXISTS settings (
+    key TEXT PRIMARY KEY,
+    value TEXT NOT NULL
+  )`,
   `CREATE TABLE IF NOT EXISTS app_settings (
     key TEXT PRIMARY KEY,
     value TEXT NOT NULL,
@@ -320,6 +324,17 @@ export async function initializeDatabase(): Promise<void> {
       "SELECT value FROM app_settings WHERE key = 'session_secret'"
     );
     setPersistentSessionSecret(persisted?.value || generated);
+  }
+
+  // 0b. Migrate any legacy school_logo_url from app_settings into settings table
+  const legacyLogo = await dbGet<{ value: string }>(
+    "SELECT value FROM app_settings WHERE key = 'school_logo_url'"
+  );
+  if (legacyLogo?.value) {
+    await dbRun(
+      "INSERT OR IGNORE INTO settings (key, value) VALUES ('school_icon', ?)",
+      [legacyLogo.value]
+    );
   }
 
   // 1. Seed Super Owner if missing

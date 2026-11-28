@@ -89,6 +89,7 @@ export async function apiRequest<T>(
     headers,
     body: fetchBody,
     credentials: 'include',
+    cache: 'no-store',
   });
 
   if (res.status === 401 && !options.skipUnauthorizedHandler) {

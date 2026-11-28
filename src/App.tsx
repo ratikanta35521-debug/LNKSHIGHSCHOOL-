@@ -59,21 +59,48 @@ export default function App() {
   const [teachers, setTeachers] = useState<TeacherContact[]>([]);
   const [loadingData, setLoadingData] = useState(false);
 
-  // Keep favicon synced when Owner/Admin changes App Icon
+  // Keep browser tab favicon & touch icon synced whenever icon loads or updates
   useEffect(() => {
-    const iconLink = document.querySelector<HTMLLinkElement>('link[rel="icon"]');
-    if (iconLink && logoUrl) {
-      iconLink.href = logoUrl;
-    }
+    if (!logoUrl) return;
+
+    const inferredType = logoUrl.startsWith('data:image/png')
+      ? 'image/png'
+      : logoUrl.startsWith('data:image/webp')
+      ? 'image/webp'
+      : logoUrl.startsWith('data:image/jpeg') || logoUrl.startsWith('data:image/jpg')
+      ? 'image/jpeg'
+      : '';
+
+    const updateLink = (rel: string) => {
+      let link = document.querySelector<HTMLLinkElement>(`link[rel="${rel}"]`);
+      if (!link) {
+        link = document.createElement('link');
+        link.rel = rel;
+        document.head.appendChild(link);
+      }
+      if (inferredType) {
+        link.type = inferredType;
+      } else {
+        link.removeAttribute('type');
+      }
+      link.href = logoUrl;
+    };
+
+    updateLink('icon');
+    updateLink('shortcut icon');
+    updateLink('apple-touch-icon');
   }, [logoUrl]);
 
-  // Load public app logo & verify persisted backend session on page load/refresh
+  // Always fetch latest icon from GET /api/icon & verify persisted backend session on load/refresh
   useEffect(() => {
     let active = true;
 
-    apiRequest<{ logoUrl: string }>('/api/settings/public', { skipUnauthorizedHandler: true })
+    apiRequest<{ icon?: string; logoUrl?: string }>(`/api/icon?t=${Date.now()}`, {
+      skipUnauthorizedHandler: true,
+    })
       .then((res) => {
-        if (active && res.logoUrl) setLogoUrl(res.logoUrl);
+        const latestIcon = res.icon || res.logoUrl;
+        if (active && latestIcon) setLogoUrl(latestIcon);
       })
       .catch(() => {});
 

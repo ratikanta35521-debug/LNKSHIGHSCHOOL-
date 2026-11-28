@@ -681,69 +681,103 @@ app.post(
 );
 
 // ============================================================================
-// PUBLIC SETTINGS & PERMANENT APP ICON/LOGO MANAGEMENT (Owner / Admin Only)
-// Saved as Base64 Data URI or HTTPS URL directly inside Turso app_settings
+// SCHOOL PORTAL ICON & PUBLIC SETTINGS (Turso `settings` table — Owner/Admin Only)
 // ============================================================================
+const SAFE_BASE64_ICON_RE = /^data:image\/(png|jpeg|jpg|webp);base64,[A-Za-z0-9+/=]+$/;
+const MAX_ICON_BASE64_LEN = 600_000; // ~450KB raw image (256x256 compressed is typically 8-40KB)
+
+function validateIconValue(input: unknown): string | null {
+  if (typeof input !== 'string') return null;
+  const trimmed = input.trim();
+  if (!trimmed) return null;
+  if (trimmed.startsWith('data:')) {
+    if (trimmed.length > MAX_ICON_BASE64_LEN) return null;
+    if (!SAFE_BASE64_ICON_RE.test(trimmed)) return null;
+    return trimmed;
+  }
+  if (trimmed.length <= 1000 && isValidHttpUrl(trimmed)) {
+    return trimmed;
+  }
+  return null;
+}
+
+async function getSavedSchoolIcon(): Promise<string> {
+  const row = await dbGet<{ value: string }>(
+    "SELECT value FROM settings WHERE key = 'school_icon'"
+  );
+  return row?.value || DEFAULT_LOGO_URL;
+}
+
+async function saveSchoolIcon(iconValue: string): Promise<void> {
+  await dbRun(
+    `INSERT INTO settings (key, value) VALUES ('school_icon', ?)
+     ON CONFLICT(key) DO UPDATE SET value = excluded.value`,
+    [iconValue]
+  );
+}
+
+app.get(
+  '/api/icon',
+  asyncHandler(async (_req: Request, res: Response) => {
+    const icon = await getSavedSchoolIcon();
+    res.setHeader('Cache-Control', 'no-store, no-cache, must-revalidate, proxy-revalidate');
+    res.setHeader('Pragma', 'no-cache');
+    res.setHeader('Expires', '0');
+    res.json({ icon, logoUrl: icon });
+  })
+);
+
+const handleSaveIcon = asyncHandler(async (req: AuthedRequest, res: Response) => {
+  let iconValue: string | null = null;
+
+  if (req.file) {
+    if (!ALLOWED_IMAGE_MIME.has(req.file.mimetype)) {
+      res.status(400).json({ error: 'Please upload a valid PNG, JPG, or WEBP image.' });
+      return;
+    }
+    if (req.file.size > 2 * 1024 * 1024) {
+      res.status(400).json({ error: 'School icon image must be 2 MB or smaller.' });
+      return;
+    }
+    iconValue = `data:${req.file.mimetype};base64,${req.file.buffer.toString('base64')}`;
+  } else {
+    const rawCandidate = req.body?.icon ?? req.body?.logo_url ?? req.body?.image;
+    iconValue = validateIconValue(rawCandidate);
+    if (!iconValue) {
+      res.status(400).json({
+        error:
+          'Please upload a valid PNG, JPG, or WEBP image (compressed Base64) or enter a valid http:// or https:// image URL.',
+      });
+      return;
+    }
+  }
+
+  await saveSchoolIcon(iconValue);
+  res.setHeader('Cache-Control', 'no-store');
+  res.json({ ok: true, icon: iconValue, logoUrl: iconValue });
+});
+
+const handleResetIcon = asyncHandler(async (_req: AuthedRequest, res: Response) => {
+  await dbRun("DELETE FROM settings WHERE key = 'school_icon'");
+  await dbRun("DELETE FROM app_settings WHERE key = 'school_logo_url'");
+  res.setHeader('Cache-Control', 'no-store');
+  res.json({ ok: true, icon: DEFAULT_LOGO_URL, logoUrl: DEFAULT_LOGO_URL });
+});
+
+app.post('/api/icon', requireAuth, requireStaff, upload.single('logo'), handleSaveIcon);
+app.delete('/api/icon', requireAuth, requireStaff, handleResetIcon);
+
 app.get(
   '/api/settings/public',
   asyncHandler(async (_req: Request, res: Response) => {
-    const logoRow = await dbGet<{ value: string }>(
-      "SELECT value FROM app_settings WHERE key = 'school_logo_url'"
-    );
-    res.json({ logoUrl: logoRow?.value || DEFAULT_LOGO_URL });
+    const icon = await getSavedSchoolIcon();
+    res.setHeader('Cache-Control', 'no-store, no-cache, must-revalidate');
+    res.json({ icon, logoUrl: icon });
   })
 );
 
-app.post(
-  '/api/settings/logo',
-  requireAuth,
-  requireStaff,
-  upload.single('logo'),
-  asyncHandler(async (req: AuthedRequest, res: Response) => {
-    let logoValue = '';
-
-    if (req.file) {
-      if (!ALLOWED_IMAGE_MIME.has(req.file.mimetype)) {
-        res.status(400).json({ error: 'Please upload a valid PNG, JPG, or WEBP image.' });
-        return;
-      }
-      if (req.file.size > 2 * 1024 * 1024) {
-        res.status(400).json({ error: 'School icon image must be 2 MB or smaller.' });
-        return;
-      }
-      logoValue = `data:${req.file.mimetype};base64,${req.file.buffer.toString('base64')}`;
-    } else if (typeof req.body?.logo_url === 'string' && req.body.logo_url.trim()) {
-      const candidate = cleanText(req.body.logo_url, 1000);
-      if (!isValidHttpUrl(candidate)) {
-        res.status(400).json({ error: 'Please provide a valid http:// or https:// image URL.' });
-        return;
-      }
-      logoValue = candidate;
-    } else {
-      res.status(400).json({ error: 'Please upload a PNG/JPG/WEBP logo image or provide an image URL.' });
-      return;
-    }
-
-    const now = new Date().toISOString();
-    await dbRun(
-      `INSERT INTO app_settings (key, value, updated_at) VALUES ('school_logo_url', ?, ?)
-       ON CONFLICT(key) DO UPDATE SET value = excluded.value, updated_at = excluded.updated_at`,
-      [logoValue, now]
-    );
-
-    res.json({ logoUrl: logoValue });
-  })
-);
-
-app.delete(
-  '/api/settings/logo',
-  requireAuth,
-  requireStaff,
-  asyncHandler(async (_req: AuthedRequest, res: Response) => {
-    await dbRun("DELETE FROM app_settings WHERE key = 'school_logo_url'");
-    res.json({ logoUrl: DEFAULT_LOGO_URL });
-  })
-);
+app.post('/api/settings/logo', requireAuth, requireStaff, upload.single('logo'), handleSaveIcon);
+app.delete('/api/settings/logo', requireAuth, requireStaff, handleResetIcon);
 
 // ============================================================================
 // TEACHERS DIRECTORY & PERMANENTLY EDITABLE CONTACTS (Owner / Admin Editable)
